@@ -1,0 +1,22 @@
+name: "agnostic-sidecar-dev"
+
+services:
+  gameserver:
+    image: itzg/minecraft-server
+    environment:
+      - EULA=TRUE
+
+  sidecar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: "service:gameserver"
+    environment:
+      - AGNOSTIC_SIDECAR_INITIAL_DELAY=60s
+      - AGNOSTIC_SIDECAR_PING_PORT=25565
+      - AGNOSTIC_SIDECAR_PING_PROTOCOL=tcp
+
+  sdk-server:
+    image: us-docker.pkg.dev/agones-images/release/agones-sdk:1.50.0
+    command: --local
+    network_mode: "service:gameserver"
