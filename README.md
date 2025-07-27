@@ -1,6 +1,7 @@
 # Agnostic Agones Sidecar
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/koutselakismanos/agnostic-agones-sidecar)](https://goreportcard.com/report/github.com/koutselakismanos/agnostic-agones-sidecar)
+[![Docker Hub](https://img.shields.io/docker/pulls/pseudokouts/agnostic-agones-sidecar?style=for-the-badge&logo=docker)](https://hub.docker.com/r/pseudokouts/agnostic-agones-sidecar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
 
@@ -36,12 +37,12 @@ This sidecar perfectly implements the required Agones `GameServer` lifecycle, mo
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-repo/agnostic-agones-sidecar.git
+git clone https://github.com/koutselakismanos/agnostic-agones-sidecar.git
 cd agnostic-agones-sidecar
 
 # Build and push the Docker image to your registry
-docker build -t your-registry/agnostic-agones-sidecar:1.0 .
-docker push your-registry/agnostic-agones-sidecar:1.0
+docker build -t pseudokouts/agnostic-agones-sidecar:1.0 .
+docker push pseudokouts/agnostic-agones-sidecar:1.0
 ```
 
 ### Configuration
@@ -82,7 +83,7 @@ spec:
             - name: EULA
               value: "TRUE"
         - name: agnostic-sidecar
-          image: your-registry/agnostic-agones-sidecar:1.0
+          image: pseudokouts/agnostic-agones-sidecar:1.0
           env:
             - name: AGNOSTIC_SIDECAR_INITIAL_DELAY
               value: "60s"
@@ -116,7 +117,7 @@ spec:
             - name: SERVER_PASS
               value: "secret"
         - name: agnostic-sidecar
-          image: your-registry/agnostic-agones-sidecar:1.0
+          image: pseudokouts/agnostic-agones-sidecar:1.0
           env:
             - name: AGNOSTIC_SIDECAR_INITIAL_DELAY
               value: "120s" # Valheim can take a while to start
