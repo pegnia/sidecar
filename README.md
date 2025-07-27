@@ -3,7 +3,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/koutselakismanos/agnostic-agones-sidecar)](https://goreportcard.com/report/github.com/koutselakismanos/agnostic-agones-sidecar)
 [![Docker Hub](https://img.shields.io/docker/pulls/pseudokouts/agnostic-agones-sidecar?style=for-the-badge&logo=docker)](https://hub.docker.com/r/pseudokouts/agnostic-agones-sidecar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
+![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)
 
 A universal, lightweight sidecar for integrating any network-responsive game server with [Agones](https://agones.dev) without needing source code access.
 
