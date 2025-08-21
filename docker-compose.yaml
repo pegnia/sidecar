@@ -1,10 +1,18 @@
 name: "agnostic-sidecar-dev"
 
+volumes:
+  gamedata:
+    driver: local
+    
 services:
   gameserver:
     image: itzg/minecraft-server
     environment:
       - EULA=TRUE
+    volumes:
+      - gamedata:/data
+    ports:
+      - "9999:9999"
 
   sidecar:
     build:
@@ -12,9 +20,15 @@ services:
       dockerfile: Dockerfile
     network_mode: "service:gameserver"
     environment:
-      - AGNOSTIC_SIDECAR_INITIAL_DELAY=60s
-      - AGNOSTIC_SIDECAR_PING_PORT=25565
-      - AGNOSTIC_SIDECAR_PING_PROTOCOL=tcp
+      - SIDECAR_INITIAL_DELAY=20s
+      - SIDECAR_HEALTH_INTERVAL=15s
+      - SIDECAR_PING_PORT=25565
+      - SIDECAR_PING_PROTOCOL=tcp
+      - SIDECAR_API_ADDR=:9999
+      - SIDECAR_DATA_ROOT=/data
+      - SIDECAR_RATE_LIMIT=2
+    volumes:
+      - gamedata:/data
 
   sdk-server:
     image: us-docker.pkg.dev/agones-images/release/agones-sdk:1.50.0

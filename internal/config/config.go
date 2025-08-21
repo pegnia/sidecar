@@ -1,52 +1,70 @@
 package config
 
 import (
-	"log/slog"
 	"os"
 	"time"
 )
 
-// Config holds all settings for the application.
+// Config holds all settings for the unified sidecar.
 type Config struct {
+	Agones AgonesConfig
+	API    APIConfig
+	Data   DataConfig
+}
+
+// AgonesConfig holds settings for the Agones SDK interaction.
+type AgonesConfig struct {
 	InitialDelay   time.Duration
 	HealthInterval time.Duration
-	Ping           PingConfig
+	PingHost       string
+	PingPort       string
+	PingProtocol   string
+	PingTimeout    time.Duration
 }
 
-type PingConfig struct {
-	Host     string
-	Port     string
-	Protocol string
-	Timeout  time.Duration
+// APIConfig holds settings for the internal file management API.
+type APIConfig struct {
+	ListenAddress string
 }
 
-// FromEnv loads the configuration from environment variables.
-func FromEnv() *Config {
+// DataConfig specifies the data directory.
+type DataConfig struct {
+	Root string
+}
+
+// LoadFromEnv loads configuration from environment variables.
+func LoadFromEnv() *Config {
 	return &Config{
-		InitialDelay:   getEnvDurationOr("INITIAL_DELAY", 30*time.Second),
-		HealthInterval: getEnvDurationOr("HEALTH_INTERVAL", 15*time.Second),
-		Ping: PingConfig{
-			Host:     getEnvOr("PING_HOST", "127.0.0.1"),
-			Port:     getEnvOr("PING_PORT", "7777"),
-			Protocol: getEnvOr("PING_PROTOCOL", "tcp"),
-			Timeout:  getEnvDurationOr("PING_TIMEOUT", 5*time.Second),
+		Agones: AgonesConfig{
+			InitialDelay:   getEnvDuration("SIDECAR_INITIAL_DELAY", 30*time.Second),
+			HealthInterval: getEnvDuration("SIDECAR_HEALTH_INTERVAL", 15*time.Second),
+			PingHost:       getEnv("SIDECAR_PING_HOST", "127.0.0.1"),
+			PingPort:       getEnv("SIDECAR_PING_PORT", "25565"),
+			PingProtocol:   getEnv("SIDECAR_PING_PROTOCOL", "tcp"),
+			PingTimeout:    getEnvDuration("SIDECAR_PING_TIMEOUT", 5*time.Second),
+		},
+		API: APIConfig{
+			ListenAddress: getEnv("SIDECAR_API_ADDR", ":9999"),
+		},
+		Data: DataConfig{
+			Root: getEnv("SIDECAR_DATA_ROOT", "/data"),
 		},
 	}
 }
 
-func getEnvOr(key, fallback string) string {
-	if value, ok := os.LookupEnv("AGNOSTIC_SIDECAR_" + key); ok {
+// Helper functions to read environment variables with defaults.
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
 		return value
 	}
 	return fallback
 }
 
-func getEnvDurationOr(key string, fallback time.Duration) time.Duration {
-	if value, ok := os.LookupEnv("AGNOSTIC_SIDECAR_" + key); ok {
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	if value, ok := os.LookupEnv(key); ok {
 		if d, err := time.ParseDuration(value); err == nil {
 			return d
 		}
-		slog.Warn("Invalid duration format in environment variable, using default", "key", key, "value", value)
 	}
 	return fallback
 }

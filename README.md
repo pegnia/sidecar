@@ -141,6 +141,72 @@ Contributions are welcome! Please feel free to open an issue or submit a pull re
 
 Distributed under the MIT License. See `LICENSE` for more information.
 
+## File Management API
+
+The sidecar includes a file management API that allows you to access and manage files on the game server. This is useful for uploading mods, downloading logs, or managing configuration files without needing to restart the server.
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+| -------- | ------ | ----------- |
+| `/health` | GET | Health check endpoint |
+| `/api/files` | GET | List files in a directory |
+| `/api/files/download` | GET | Download a file |
+| `/api/files/upload` | POST | Upload a file |
+| `/api/files/delete` | POST | Delete a file or directory |
+| `/api/files/create-dir` | POST | Create a directory |
+
+### Authentication
+
+The API supports authentication using an API key. To enable authentication, set the `SIDECAR_API_KEY` environment variable. When making requests to the API, include the API key in the `X-API-Key` header.
+
+Example:
+```bash
+curl -H "X-API-Key: your-api-key" http://your-server:8080/api/files?path=/data
+```
+
+If no API key is set, authentication is disabled.
+
+### Rate Limiting
+
+The API includes rate limiting to prevent abuse. By default, each IP address is limited to 60 requests per minute. You can adjust this limit using the `SIDECAR_RATE_LIMIT` environment variable.
+
+### File Management Configuration
+
+| Environment Variable | Description | Default Value |
+| ------------------- | ----------- | ------------- |
+| `SIDECAR_API_ADDR` | Address for the file management API server | `:8080` |
+| `SIDECAR_DATA_ROOT` | Root directory for file management | `/data` |
+| `SIDECAR_API_KEY` | API key for authentication (empty = no auth) | ` ` |
+| `SIDECAR_RATE_LIMIT` | Rate limit (requests per minute per IP) | `60` |
+
+### Example Usage
+
+#### Listing Files
+```bash
+curl http://your-server:8080/api/files?path=/data
+```
+
+#### Downloading a File
+```bash
+curl http://your-server:8080/api/files/download?path=/data/config.yml -o config.yml
+```
+
+#### Uploading a File
+```bash
+curl -X POST -F "file=@local-file.txt" http://your-server:8080/api/files/upload?path=/data
+```
+
+#### Creating a Directory
+```bash
+curl -X POST -H "Content-Type: application/json" -d '{"path":"/data/mods"}' http://your-server:8080/api/files/create-dir
+```
+
+#### Deleting a File
+```bash
+curl -X POST -H "Content-Type: application/json" -d '{"path":"/data/old-config.yml"}' http://your-server:8080/api/files/delete
+```
+
 ## Acknowledgements
 
 -   The [Agones](https://agones.dev) team for creating an amazing open-source platform.

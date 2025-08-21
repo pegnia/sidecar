@@ -1,4 +1,4 @@
-module github.com/koutselakismanos/agnostic-agones-sidecar
+module github.com/pegnia/sidecar
 
 go 1.24
 
