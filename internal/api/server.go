@@ -58,6 +58,47 @@ func NewServer(listenAddr, dataRoot string, stdoutFile string) *Server {
 	}
 }
 
+// responseWriter is a wrapper for http.ResponseWriter that captures the status code
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func newResponseWriter(w http.ResponseWriter) *responseWriter {
+	// Default to 200 OK if WriteHeader is not called
+	return &responseWriter{w, http.StatusOK}
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// loggingMiddleware logs incoming HTTP requests
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		wrappedWriter := newResponseWriter(w)
+
+		next.ServeHTTP(wrappedWriter, r) // Serve the request
+
+		s.logger.Info("HTTP Request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"remote_addr", r.RemoteAddr,
+			"status_code", wrappedWriter.statusCode,
+			"duration", time.Since(start),
+			"user_agent", r.UserAgent(),
+		)
+	})
+}
+
 // rateLimitRequest implements a simple rate limiting middleware
 func (s *Server) rateLimitRequest(next http.Handler) http.Handler {
 	// FIXME: This does not work
@@ -116,9 +157,10 @@ func (s *Server) Run(ctx context.Context) {
 
 	mux.HandleFunc("GET /api/logs/stream", s.streamStdoutLogHandler)
 
-	// Create a handler chain with our middleware
+	// Create a handler chain with our middleware. Order matters: requests flow from bottom to top.
 	var handler http.Handler = mux
 	handler = s.rateLimitRequest(handler)
+	handler = s.loggingMiddleware(handler)
 
 	srv := &http.Server{
 		Addr:    s.listenAddr,
