@@ -26,7 +26,7 @@ services:
       - SIDECAR_PING_PROTOCOL=tcp
       - SIDECAR_API_ADDR=:9999
       - SIDECAR_DATA_ROOT=/data
-      - SIDECAR_RATE_LIMIT=2
+      - SIDECAR_RATE_LIMIT=8
     volumes:
       - gamedata:/data
 

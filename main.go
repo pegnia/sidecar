@@ -21,7 +21,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("Starting Unified Agones Sidecar")
+	slog.Info("Starting Agones Sidecar")
 
 	agonesSDK, err := sdk.NewSDK()
 	if err != nil {
@@ -30,7 +30,7 @@ func main() {
 	}
 	slog.Info("Successfully connected to Agones SDK")
 
-	apiServer := api.NewServer(cfg.API.ListenAddress, cfg.Data.Root)
+	apiServer := api.NewServer(cfg.API.ListenAddress, cfg.Data.Root, cfg.Data.StdoutFile)
 
 	go agones.RunManager(ctx, cfg.Agones, agonesSDK)
 	go apiServer.Run(ctx)

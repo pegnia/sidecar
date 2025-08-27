@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ type Server struct {
 	dataRoot   string
 	logger     *slog.Logger
 
+	stdoutLogPath string
 	requestCounts map[string]int
 	rateLimitMu   sync.Mutex
 	rateLimit     int
@@ -36,7 +38,7 @@ type FileInfo struct {
 }
 
 // NewServer creates a new API server instance.
-func NewServer(listenAddr, dataRoot string) *Server {
+func NewServer(listenAddr, dataRoot string, stdoutFile string) *Server {
 
 	// Get rate limit from environment variable, default to 60 requests per minute
 	rateLimit := 60
@@ -50,6 +52,7 @@ func NewServer(listenAddr, dataRoot string) *Server {
 		listenAddr:    listenAddr,
 		dataRoot:      dataRoot,
 		logger:        slog.With("component", "api-server"),
+		stdoutLogPath: filepath.Join(dataRoot, stdoutFile),
 		requestCounts: make(map[string]int),
 		rateLimit:     rateLimit,
 	}
@@ -110,6 +113,8 @@ func (s *Server) Run(ctx context.Context) {
 	mux.HandleFunc("POST /api/files/upload", s.uploadFileHandler)
 	mux.HandleFunc("POST /api/files/delete", s.deleteFileHandler)
 	mux.HandleFunc("POST /api/files/create-dir", s.createDirHandler)
+
+	mux.HandleFunc("GET /api/logs/stream", s.streamStdoutLogHandler)
 
 	// Create a handler chain with our middleware
 	var handler http.Handler = mux
@@ -368,6 +373,63 @@ func (s *Server) createDirHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintln(w, "Directory created successfully")
+}
+
+func (s *Server) streamStdoutLogHandler(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.With("handler", "streamStdoutLog", "path", s.stdoutLogPath)
+	log.Info("Log stream connection initiated.")
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*") // Adjust for production if needed
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		log.Error("Streaming unsupported by the connection")
+		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+		return
+	}
+
+	// For a more robust solution, consider a library like "github.com/nxadm/tail"
+	// but for simplicity, a basic tailing loop is shown here.
+	file, err := os.Open(s.stdoutLogPath)
+	if err != nil {
+		log.Error("Could not open log file for streaming", "error", err)
+		http.Error(w, "Log file not available", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+
+	// Start reading from the end of the file to only get new lines.
+	file.Seek(0, io.SeekEnd)
+
+	reader := bufio.NewReader(file)
+
+	for {
+		select {
+		case <-r.Context().Done():
+			log.Info("Client disconnected from log stream.")
+			return // Exit when the client closes the connection.
+		default:
+			line, err := reader.ReadString('\n')
+			if err == io.EOF {
+				// No new lines, wait a moment and try again.
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			if err != nil {
+				log.Warn("Error reading from log file during stream", "error", err)
+				return
+			}
+
+			// Format as an SSE message ("data: ...\n\n").
+			fmt.Fprintf(w, "data: %s\n\n", strings.TrimSpace(line))
+
+			// Flush the data to the client immediately.
+			flusher.Flush()
+		}
+	}
 }
 
 // healthCheckHandler provides a simple endpoint to verify the server is running.

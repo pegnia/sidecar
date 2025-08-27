@@ -27,9 +27,10 @@ type APIConfig struct {
 	ListenAddress string
 }
 
-// DataConfig specifies the data directory.
+// DataConfig specifies the data directory and log file paths.
 type DataConfig struct {
-	Root string
+	Root       string
+	StdoutFile string
 }
 
 // LoadFromEnv loads configuration from environment variables.
@@ -47,7 +48,8 @@ func LoadFromEnv() *Config {
 			ListenAddress: getEnv("SIDECAR_API_ADDR", ":9999"),
 		},
 		Data: DataConfig{
-			Root: getEnv("SIDECAR_DATA_ROOT", "/data"),
+			Root:       getEnv("SIDECAR_DATA_ROOT", "/data"),
+			StdoutFile: getEnv("SIDECAR_STDOUT_FILE", "logs/stdout.log"),
 		},
 	}
 }
