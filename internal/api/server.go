@@ -418,6 +418,8 @@ func (s *Server) createDirHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) streamStdoutLogHandler(w http.ResponseWriter, r *http.Request) {
+	const initialLogLines = 100
+
 	log := s.logger.With("handler", "streamStdoutLog", "path", s.stdoutLogPath)
 	log.Info("Log stream connection initiated.")
 
@@ -443,20 +445,38 @@ func (s *Server) streamStdoutLogHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	defer file.Close()
 
-	// Start reading from the end of the file to only get new lines.
-	file.Seek(0, io.SeekEnd)
+	scanner := bufio.NewScanner(file)
+	var history []string
+	for scanner.Scan() {
+		history = append(history, scanner.Text())
+		// If our history buffer is too long, trim the oldest line from the front.
+		if len(history) > initialLogLines {
+			history = history[1:]
+		}
+	}
 
+	if err := scanner.Err(); err != nil {
+		log.Error("Error reading historical log lines", "error", err)
+	}
+
+	log.Info("Sending historical log lines", "count", len(history))
+	if len(history) > 0 {
+		for _, line := range history {
+			fmt.Fprintf(w, "data: %s\n\n", line)
+		}
+		fmt.Fprintf(w, "data: --- End of recent logs. Live stream starting... ---\n\n")
+		flusher.Flush()
+	}
 	reader := bufio.NewReader(file)
 
 	for {
 		select {
 		case <-r.Context().Done():
 			log.Info("Client disconnected from log stream.")
-			return // Exit when the client closes the connection.
+			return
 		default:
 			line, err := reader.ReadString('\n')
 			if err == io.EOF {
-				// No new lines, wait a moment and try again.
 				time.Sleep(500 * time.Millisecond)
 				continue
 			}
