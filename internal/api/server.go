@@ -3,27 +3,37 @@ package api
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/pegnia/sidecar/internal/config"
 )
 
 // Server holds dependencies and configuration for the internal API server.
 type Server struct {
 	listenAddr string
 	dataRoot   string
-	logger     *slog.Logger
+	// root confines every file operation to dataRoot, including through symlinks the
+	// game (or a customer's mod) may have created inside it.
+	root   *os.Root
+	apiKey string
+	logger *slog.Logger
 
 	stdoutLogPath string
+	stdoutLogRel  string
 	requestCounts map[string]int
 	rateLimitMu   sync.Mutex
 	rateLimit     int
@@ -37,25 +47,28 @@ type FileInfo struct {
 	Modified time.Time `json:"modified"`
 }
 
-// NewServer creates a new API server instance.
-func NewServer(listenAddr, dataRoot string, stdoutFile string) *Server {
-
-	// Get rate limit from environment variable, default to 60 requests per minute
-	rateLimit := 60
-	if rateLimitEnv := os.Getenv("SIDECAR_RATE_LIMIT"); rateLimitEnv != "" {
-		if val, err := strconv.Atoi(rateLimitEnv); err == nil && val > 0 {
-			rateLimit = val
-		}
+// NewServer creates a new API server instance. The data root must exist.
+func NewServer(cfg *config.Config) (*Server, error) {
+	dataRoot := filepath.Clean(cfg.Data.Root)
+	root, err := os.OpenRoot(dataRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open data root: %w", err)
 	}
-
+	rateLimit := cfg.API.RateLimit
+	if rateLimit <= 0 {
+		rateLimit = 60
+	}
 	return &Server{
-		listenAddr:    listenAddr,
+		listenAddr:    cfg.API.ListenAddress,
 		dataRoot:      dataRoot,
+		root:          root,
+		apiKey:        cfg.API.APIKey,
 		logger:        slog.With("component", "api-server"),
-		stdoutLogPath: filepath.Join(dataRoot, stdoutFile),
+		stdoutLogPath: filepath.Join(dataRoot, cfg.Data.StdoutFile),
+		stdoutLogRel:  filepath.Clean(cfg.Data.StdoutFile),
 		requestCounts: make(map[string]int),
 		rateLimit:     rateLimit,
-	}
+	}, nil
 }
 
 // responseWriter is a wrapper for http.ResponseWriter that captures the status code
@@ -99,9 +112,24 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// authMiddleware requires the configured API key in the X-API-Key header. Without a
+// configured key the API is open, and access must be restricted by the network instead.
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.apiKey == "" || r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-API-Key")), []byte(s.apiKey)) != 1 {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // rateLimitRequest implements a simple rate limiting middleware
 func (s *Server) rateLimitRequest(next http.Handler) http.Handler {
-	// FIXME: This does not work
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip rate limiting for health check endpoint
 		if r.URL.Path == "/health" {
@@ -145,8 +173,8 @@ func (s *Server) rateLimitRequest(next http.Handler) http.Handler {
 	})
 }
 
-// Run starts the HTTP server and handles graceful shutdown.
-func (s *Server) Run(ctx context.Context) {
+// Handler returns the API with its middleware.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.healthCheckHandler)
 	mux.HandleFunc("GET /api/files", s.listFilesHandler)
@@ -160,60 +188,101 @@ func (s *Server) Run(ctx context.Context) {
 	// Create a handler chain with our middleware. Order matters: requests flow from bottom to top.
 	var handler http.Handler = mux
 	handler = s.rateLimitRequest(handler)
+	handler = s.authMiddleware(handler)
 	handler = s.loggingMiddleware(handler)
+	return handler
+}
 
+// Run serves the API until ctx is cancelled, then shuts down gracefully.
+func (s *Server) Run(ctx context.Context) error {
+	defer s.root.Close()
 	srv := &http.Server{
-		Addr:    s.listenAddr,
-		Handler: handler,
+		Addr:              s.listenAddr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	errc := make(chan error, 1)
 	go func() {
 		s.logger.Info("Starting file manager API server", "address", srv.Addr, "serving_from", s.dataRoot)
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			s.logger.Error("API server crashed", "error", err)
+			errc <- err
 		}
+		close(errc)
 	}()
 
-	<-ctx.Done()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
 	s.logger.Info("Shutting down API server...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		s.logger.Error("API server graceful shutdown failed", "error", err)
+	return srv.Shutdown(shutdownCtx)
+}
+
+// sanitizePath turns a user-provided path into a path relative to the data root.
+// Paths are always taken relative to the root: "/", "" and "." mean the root itself, and
+// "/mods" and "mods" are the same directory. A path that would leave the root, such as
+// "../etc", "/../etc" or "../data-other", is rejected. File operations additionally go through
+// os.Root, which also stops symlinks inside the data directory from leading outside it.
+func sanitizePath(userPath string) (string, error) {
+	if strings.ContainsRune(userPath, 0) {
+		return "", errInvalidPath
+	}
+	rel := strings.TrimLeft(filepath.FromSlash(userPath), string(filepath.Separator))
+	rel = filepath.Clean(rel) // "" becomes "."
+	if rel != "." && !filepath.IsLocal(rel) {
+		return "", errInvalidPath
+	}
+	return rel, nil
+}
+
+var errInvalidPath = errors.New("invalid path: access denied")
+
+// fileError maps an error from a file operation to an HTTP response.
+func (s *Server) fileError(w http.ResponseWriter, op, path string, err error) {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		http.Error(w, "Not found", http.StatusNotFound)
+	case errors.Is(err, fs.ErrExist):
+		http.Error(w, "Already exists", http.StatusConflict)
+	case isEscape(err):
+		// os.Root refuses paths that resolve outside the root, e.g. through a symlink.
+		http.Error(w, errInvalidPath.Error(), http.StatusBadRequest)
+	default:
+		s.logger.Error("File operation failed", "op", op, "path", path, "error", err)
+		http.Error(w, "Could not "+op, http.StatusInternalServerError)
 	}
 }
 
-// sanitizePath cleans and validates a user-provided path.
-// It ensures the resulting path is a clean, absolute path still within the allowed dataRoot.
-// This is the primary security function to prevent path traversal attacks.
-func (s *Server) sanitizePath(userPath string) (string, error) {
-	// Join the root with the user-provided path and clean it up (resolves .., ., //, etc.)
-	fullPath := filepath.Join(s.dataRoot, userPath)
-
-	// Security check: ensure the final, cleaned path still starts with our root directory.
-	if !strings.HasPrefix(fullPath, s.dataRoot) {
-		return "", fmt.Errorf("invalid path: access denied")
-	}
-	return fullPath, nil
+func isEscape(err error) bool {
+	var pe *fs.PathError
+	return errors.As(err, &pe) && strings.Contains(pe.Err.Error(), "escapes from parent")
 }
 
 // listFilesHandler handles requests to list directory contents.
 func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
-	fullPath, err := s.sanitizePath(path)
+	rel, err := sanitizePath(r.URL.Query().Get("path"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	dirEntries, err := os.ReadDir(fullPath)
+	dir, err := s.root.Open(rel)
 	if err != nil {
-		s.logger.Error("Failed to read directory", "path", fullPath, "error", err)
-		http.Error(w, "Could not read directory", http.StatusInternalServerError)
+		s.fileError(w, "read directory", rel, err)
+		return
+	}
+	defer dir.Close()
+	dirEntries, err := dir.ReadDir(-1)
+	if err != nil {
+		s.fileError(w, "read directory", rel, err)
 		return
 	}
 
-	var files []FileInfo
+	files := []FileInfo{}
 	for _, entry := range dirEntries {
 		info, err := entry.Info()
 		if err != nil {
@@ -236,54 +305,50 @@ func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
 
 // downloadFileHandler serves a single file for download.
 func (s *Server) downloadFileHandler(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
-	fullPath, err := s.sanitizePath(path)
+	rel, err := sanitizePath(r.URL.Query().Get("path"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	info, err := os.Stat(fullPath)
+	f, err := s.root.Open(rel)
 	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "File not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "Could not access file", http.StatusInternalServerError)
+		s.fileError(w, "access file", rel, err)
 		return
 	}
-
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		s.fileError(w, "access file", rel, err)
+		return
+	}
 	if info.IsDir() {
 		http.Error(w, "Cannot download a directory", http.StatusBadRequest)
 		return
 	}
 
-	w.Header().Set("Content-Disposition", "attachment; filename="+filepath.Base(fullPath))
-	http.ServeFile(w, r, fullPath)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": info.Name()}))
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 // uploadFileHandler handles multipart file uploads.
 func (s *Server) uploadFileHandler(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
-	fullPath, err := s.sanitizePath(path)
+	rel, err := sanitizePath(r.URL.Query().Get("path"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Check if destination directory exists
-	dirInfo, err := os.Stat(fullPath)
+	// Check that the destination is an existing directory.
+	dirInfo, err := s.root.Stat(rel)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			http.Error(w, "Destination directory does not exist", http.StatusBadRequest)
-		} else {
-			s.logger.Error("Failed to check destination directory", "path", fullPath, "error", err)
-			http.Error(w, "Could not access destination directory", http.StatusInternalServerError)
+			return
 		}
+		s.fileError(w, "access destination directory", rel, err)
 		return
 	}
-
-	// Ensure the destination is a directory
 	if !dirInfo.IsDir() {
 		http.Error(w, "Destination path is not a directory", http.StatusBadRequest)
 		return
@@ -300,63 +365,56 @@ func (s *Server) uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Basic file type validation - check file extension
-	// This is a simple example - a production system would use more robust validation
+	// The file name must be a plain name, not a path.
 	filename := header.Filename
-	ext := strings.ToLower(filepath.Ext(filename))
+	if filename == "" || filename != filepath.Base(filename) || !filepath.IsLocal(filename) {
+		http.Error(w, "Invalid destination filename", http.StatusBadRequest)
+		return
+	}
 
-	// List of potentially dangerous extensions
+	// Basic file type validation - check file extension
+	ext := strings.ToLower(filepath.Ext(filename))
 	dangerousExts := map[string]bool{
 		".exe": true, ".dll": true, ".sh": true, ".bat": true, ".cmd": true,
 		".php": true, ".phtml": true, ".js": true, ".jsp": true, ".asp": true,
 	}
-
 	if dangerousExts[ext] {
 		s.logger.Warn("Attempted upload of potentially dangerous file type", "filename", filename, "extension", ext)
 		http.Error(w, "File type not allowed for security reasons", http.StatusBadRequest)
 		return
 	}
 
-	destPath := filepath.Join(fullPath, filename)
-
-	// Final security check on the combined path to ensure no funny business in the filename.
-	if !strings.HasPrefix(destPath, fullPath) {
-		http.Error(w, "Invalid destination filename", http.StatusBadRequest)
-		return
+	destRel := filepath.Join(rel, filename)
+	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	if r.URL.Query().Get("overwrite") != "true" {
+		flags |= os.O_EXCL
 	}
-
-	// Check if file already exists
-	overwrite := r.URL.Query().Get("overwrite") == "true"
-	if _, err := os.Stat(destPath); err == nil && !overwrite {
+	dst, err := s.root.OpenFile(destRel, flags, 0644)
+	if errors.Is(err, fs.ErrExist) {
 		http.Error(w, "File already exists. Use overwrite=true to replace it.", http.StatusConflict)
 		return
 	}
-
-	// Create the file with appropriate permissions
-	dst, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		s.logger.Error("Failed to create file for upload", "path", destPath, "error", err)
-		http.Error(w, "Could not save file", http.StatusInternalServerError)
+		s.fileError(w, "save file", destRel, err)
 		return
 	}
 	defer dst.Close()
 
-	// Log the upload attempt
 	s.logger.Info("File upload in progress",
 		"filename", filename,
 		"size", header.Size,
-		"destination", destPath,
+		"destination", destRel,
 		"client_ip", r.RemoteAddr)
 
 	if _, err := io.Copy(dst, file); err != nil {
-		s.logger.Error("Failed to copy uploaded file content", "path", destPath, "error", err)
+		s.logger.Error("Failed to copy uploaded file content", "path", destRel, "error", err)
 		http.Error(w, "Could not save file", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintln(w, "File uploaded successfully")
-	s.logger.Info("File upload completed successfully", "path", destPath, "size", header.Size)
+	s.logger.Info("File upload completed successfully", "path", destRel, "size", header.Size)
 }
 
 // deleteFileHandler deletes a file or directory recursively.
@@ -369,21 +427,19 @@ func (s *Server) deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fullPath, err := s.sanitizePath(payload.Path)
+	rel, err := sanitizePath(payload.Path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
 	// Important safety check: Do not allow deletion of the root directory itself.
-	if fullPath == s.dataRoot {
+	if rel == "." {
 		http.Error(w, "Cannot delete root directory", http.StatusBadRequest)
 		return
 	}
 
-	if err := os.RemoveAll(fullPath); err != nil {
-		s.logger.Error("Failed to delete file/directory", "path", fullPath, "error", err)
-		http.Error(w, "Could not delete item", http.StatusInternalServerError)
+	if err := removeAll(s.root, rel); err != nil {
+		s.fileError(w, "delete item", rel, err)
 		return
 	}
 
@@ -391,7 +447,33 @@ func (s *Server) deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Item deleted successfully")
 }
 
-// createDirHandler creates a new directory.
+// removeAll removes name and, if it is a directory, everything below it. Symlinks are
+// removed, never followed. (os.Root has no RemoveAll before Go 1.25.)
+func removeAll(root *os.Root, name string) error {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		dir, err := root.Open(name)
+		if err != nil {
+			return err
+		}
+		entries, err := dir.ReadDir(-1)
+		dir.Close()
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := removeAll(root, filepath.Join(name, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return root.Remove(name)
+}
+
+// createDirHandler creates a new directory, including missing parents.
 func (s *Server) createDirHandler(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Path string `json:"path"`
@@ -401,20 +483,46 @@ func (s *Server) createDirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fullPath, err := s.sanitizePath(payload.Path)
+	rel, err := sanitizePath(payload.Path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if err := os.MkdirAll(fullPath, 0755); err != nil {
-		s.logger.Error("Failed to create directory", "path", fullPath, "error", err)
-		http.Error(w, "Could not create directory", http.StatusInternalServerError)
+	if err := mkdirAll(s.root, rel); err != nil {
+		s.fileError(w, "create directory", rel, err)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintln(w, "Directory created successfully")
+}
+
+// mkdirAll creates name and its missing parents inside root. (os.Root has no MkdirAll
+// before Go 1.25.)
+func mkdirAll(root *os.Root, name string) error {
+	if name == "." {
+		return nil
+	}
+	current := ""
+	for _, part := range strings.Split(name, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		err := root.Mkdir(current, 0755)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		info, statErr := root.Stat(current)
+		if statErr != nil {
+			return statErr
+		}
+		if !info.IsDir() {
+			return &fs.PathError{Op: "mkdir", Path: current, Err: syscall.ENOTDIR}
+		}
+	}
+	return nil
 }
 
 func (s *Server) streamStdoutLogHandler(w http.ResponseWriter, r *http.Request) {
@@ -437,7 +545,7 @@ func (s *Server) streamStdoutLogHandler(w http.ResponseWriter, r *http.Request) 
 
 	// For a more robust solution, consider a library like "github.com/nxadm/tail"
 	// but for simplicity, a basic tailing loop is shown here.
-	file, err := os.Open(s.stdoutLogPath)
+	file, err := s.root.Open(s.stdoutLogRel)
 	if err != nil {
 		log.Error("Could not open log file for streaming", "error", err)
 		http.Error(w, "Log file not available", http.StatusNotFound)
