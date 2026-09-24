@@ -1,51 +1,40 @@
+// Package config reads the sidecar's settings from SIDECAR_* environment variables.
 package config
 
 import (
 	"os"
-	"time"
+	"strconv"
 )
 
-// Config holds all settings for the unified sidecar.
+// Config holds all settings of the sidecar.
 type Config struct {
-	Agones AgonesConfig
-	API    APIConfig
-	Data   DataConfig
+	API  APIConfig
+	Data DataConfig
 }
 
-// AgonesConfig holds settings for the Agones SDK interaction.
-type AgonesConfig struct {
-	InitialDelay   time.Duration
-	HealthInterval time.Duration
-	PingHost       string
-	PingPort       string
-	PingProtocol   string
-	PingTimeout    time.Duration
-}
-
-// APIConfig holds settings for the internal file management API.
+// APIConfig holds settings for the file management API.
 type APIConfig struct {
 	ListenAddress string
+	// APIKey, when set, must be sent in the X-API-Key header of every request except /health.
+	APIKey string
+	// RateLimit is the number of requests per minute allowed per client IP.
+	RateLimit int
 }
 
 // DataConfig specifies the data directory and log file paths.
 type DataConfig struct {
-	Root       string
+	Root string
+	// StdoutFile is the game's console log, relative to Root.
 	StdoutFile string
 }
 
 // LoadFromEnv loads configuration from environment variables.
 func LoadFromEnv() *Config {
 	return &Config{
-		Agones: AgonesConfig{
-			InitialDelay:   getEnvDuration("SIDECAR_INITIAL_DELAY", 30*time.Second),
-			HealthInterval: getEnvDuration("SIDECAR_HEALTH_INTERVAL", 15*time.Second),
-			PingHost:       getEnv("SIDECAR_PING_HOST", "127.0.0.1"),
-			PingPort:       getEnv("SIDECAR_PING_PORT", "25565"),
-			PingProtocol:   getEnv("SIDECAR_PING_PROTOCOL", "tcp"),
-			PingTimeout:    getEnvDuration("SIDECAR_PING_TIMEOUT", 5*time.Second),
-		},
 		API: APIConfig{
 			ListenAddress: getEnv("SIDECAR_API_ADDR", ":9999"),
+			APIKey:        getEnv("SIDECAR_API_KEY", ""),
+			RateLimit:     getEnvInt("SIDECAR_RATE_LIMIT", 60),
 		},
 		Data: DataConfig{
 			Root:       getEnv("SIDECAR_DATA_ROOT", "/data"),
@@ -54,7 +43,6 @@ func LoadFromEnv() *Config {
 	}
 }
 
-// Helper functions to read environment variables with defaults.
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value
@@ -62,10 +50,10 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
+func getEnvInt(key string, fallback int) int {
 	if value, ok := os.LookupEnv(key); ok {
-		if d, err := time.ParseDuration(value); err == nil {
-			return d
+		if n, err := strconv.Atoi(value); err == nil && n > 0 {
+			return n
 		}
 	}
 	return fallback
