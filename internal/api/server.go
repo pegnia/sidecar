@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -32,8 +31,6 @@ type Server struct {
 	apiKey string
 	logger *slog.Logger
 
-	stdoutLogPath string
-	stdoutLogRel  string
 	requestCounts map[string]int
 	rateLimitMu   sync.Mutex
 	rateLimit     int
@@ -64,8 +61,6 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		root:          root,
 		apiKey:        cfg.API.APIKey,
 		logger:        slog.With("component", "api-server"),
-		stdoutLogPath: filepath.Join(dataRoot, cfg.Data.StdoutFile),
-		stdoutLogRel:  filepath.Clean(cfg.Data.StdoutFile),
 		requestCounts: make(map[string]int),
 		rateLimit:     rateLimit,
 	}, nil
@@ -182,8 +177,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/files/upload", s.uploadFileHandler)
 	mux.HandleFunc("POST /api/files/delete", s.deleteFileHandler)
 	mux.HandleFunc("POST /api/files/create-dir", s.createDirHandler)
-
-	mux.HandleFunc("GET /api/logs/stream", s.streamStdoutLogHandler)
 
 	// Create a handler chain with our middleware. Order matters: requests flow from bottom to top.
 	var handler http.Handler = mux
@@ -523,83 +516,6 @@ func mkdirAll(root *os.Root, name string) error {
 		}
 	}
 	return nil
-}
-
-func (s *Server) streamStdoutLogHandler(w http.ResponseWriter, r *http.Request) {
-	const initialLogLines = 100
-
-	log := s.logger.With("handler", "streamStdoutLog", "path", s.stdoutLogPath)
-	log.Info("Log stream connection initiated.")
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*") // Adjust for production if needed
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		log.Error("Streaming unsupported by the connection")
-		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
-		return
-	}
-
-	// For a more robust solution, consider a library like "github.com/nxadm/tail"
-	// but for simplicity, a basic tailing loop is shown here.
-	file, err := s.root.Open(s.stdoutLogRel)
-	if err != nil {
-		log.Error("Could not open log file for streaming", "error", err)
-		http.Error(w, "Log file not available", http.StatusNotFound)
-		return
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	var history []string
-	for scanner.Scan() {
-		history = append(history, scanner.Text())
-		// If our history buffer is too long, trim the oldest line from the front.
-		if len(history) > initialLogLines {
-			history = history[1:]
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.Error("Error reading historical log lines", "error", err)
-	}
-
-	log.Info("Sending historical log lines", "count", len(history))
-	if len(history) > 0 {
-		for _, line := range history {
-			fmt.Fprintf(w, "data: %s\n\n", line)
-		}
-		fmt.Fprintf(w, "data: --- End of recent logs. Live stream starting... ---\n\n")
-		flusher.Flush()
-	}
-	reader := bufio.NewReader(file)
-
-	for {
-		select {
-		case <-r.Context().Done():
-			log.Info("Client disconnected from log stream.")
-			return
-		default:
-			line, err := reader.ReadString('\n')
-			if err == io.EOF {
-				time.Sleep(500 * time.Millisecond)
-				continue
-			}
-			if err != nil {
-				log.Warn("Error reading from log file during stream", "error", err)
-				return
-			}
-
-			// Format as an SSE message ("data: ...\n\n").
-			fmt.Fprintf(w, "data: %s\n\n", strings.TrimSpace(line))
-
-			// Flush the data to the client immediately.
-			flusher.Flush()
-		}
-	}
 }
 
 // healthCheckHandler provides a simple endpoint to verify the server is running.
