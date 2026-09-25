@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
 )
@@ -19,6 +20,8 @@ type APIConfig struct {
 	APIKey string
 	// RateLimit is the number of requests per minute allowed per client IP.
 	RateLimit int
+	// Insecure allows running without an API key (local experiments only).
+	Insecure bool
 }
 
 // DataConfig specifies the data directory and log file paths.
@@ -35,12 +38,22 @@ func LoadFromEnv() *Config {
 			ListenAddress: getEnv("SIDECAR_API_ADDR", ":9999"),
 			APIKey:        getEnv("SIDECAR_API_KEY", ""),
 			RateLimit:     getEnvInt("SIDECAR_RATE_LIMIT", 60),
+			Insecure:      getEnv("SIDECAR_INSECURE", "") == "true",
 		},
 		Data: DataConfig{
 			Root:       getEnv("SIDECAR_DATA_ROOT", "/data"),
 			StdoutFile: getEnv("SIDECAR_STDOUT_FILE", "logs/stdout.log"),
 		},
 	}
+}
+
+// Validate refuses a configuration that would serve the game's files to anyone: without
+// an API key the sidecar only starts when SIDECAR_INSECURE=true says so explicitly.
+func (c *Config) Validate() error {
+	if c.API.APIKey == "" && !c.API.Insecure {
+		return errors.New("SIDECAR_API_KEY is not set; set it, or SIDECAR_INSECURE=true to run without authentication")
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

@@ -55,7 +55,8 @@ limited to `SIDECAR_RATE_LIMIT` requests per minute. `/health` is not limited.
 | `SIDECAR_API_ADDR`    | Listen address of the API                            | `:9999`           |
 | `SIDECAR_DATA_ROOT`   | Directory served by the API (the game's data volume); must exist | `/data` |
 | `SIDECAR_STDOUT_FILE` | Console log file, relative to the data root          | `logs/stdout.log` |
-| `SIDECAR_API_KEY`     | Required `X-API-Key` value; empty disables auth      | (empty)           |
+| `SIDECAR_API_KEY`     | Required `X-API-Key` value (the controller sets a per-server key) | (empty: refuses to start) |
+| `SIDECAR_INSECURE`    | `true` allows starting without an API key (local experiments only) | (empty) |
 | `SIDECAR_RATE_LIMIT`  | Requests per minute per client IP                    | `60`              |
 
 ## Examples

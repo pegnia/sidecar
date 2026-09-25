@@ -23,6 +23,7 @@ services:
       - SIDECAR_API_ADDR=:9999
       - SIDECAR_DATA_ROOT=/data
       - SIDECAR_RATE_LIMIT=60
-      # - SIDECAR_API_KEY=change-me
+      # Requests need the header X-API-Key: change-me
+      - SIDECAR_API_KEY=change-me
     volumes:
       - gamedata:/data
