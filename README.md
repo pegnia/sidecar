@@ -4,8 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A small HTTP service that runs next to a game server container and gives the Pegnia panel
-access to the server's files and console log. It contains no game-specific code and does
-not talk to Kubernetes.
+access to the server's files. It contains no game-specific code and does not talk to
+Kubernetes. (The console log and commands go through the controller's console gateway,
+which reads the game's container log from Kubernetes; nothing is logged to the volume.)
 
 The Pegnia controller adds it to every game server pod when `SIDECAR_IMAGE` is set in the
 controller's configuration. The sidecar shares the game's data volume and is reachable at
@@ -30,7 +31,6 @@ Go's `os.Root`, so symlinks inside the data directory cannot lead outside it eit
 | `/api/files/upload?path=[&overwrite=true]` | POST | Upload a multipart `file` into a directory |
 | `/api/files/delete`     | POST   | Delete a file or directory: `{"path": "..."}`         |
 | `/api/files/create-dir` | POST   | Create a directory and its parents: `{"path": "..."}` |
-| `/api/logs/stream`      | GET    | Server-sent events: the last 100 lines of the console log, then new lines as they are written |
 
 Uploads are limited to 500 MB, and files with executable/script extensions
 (`.exe`, `.sh`, `.php`, `.js`, ...) are refused. Uploading over an existing file needs
@@ -55,7 +55,6 @@ limited to `SIDECAR_RATE_LIMIT` requests per minute. `/health` is not limited.
 |-----------------------|------------------------------------------------------|-------------------|
 | `SIDECAR_API_ADDR`    | Listen address of the API                            | `:9999`           |
 | `SIDECAR_DATA_ROOT`   | Directory served by the API (the game's data volume); must exist | `/data` |
-| `SIDECAR_STDOUT_FILE` | Console log file, relative to the data root          | `logs/stdout.log` |
 | `SIDECAR_API_KEY`     | Required `X-API-Key` value (the controller sets a per-server key) | (empty: refuses to start) |
 | `SIDECAR_INSECURE`    | `true` allows starting without an API key (local experiments only) | (empty) |
 | `SIDECAR_RATE_LIMIT`  | Requests per minute per client IP                    | `60`              |
@@ -63,14 +62,12 @@ limited to `SIDECAR_RATE_LIMIT` requests per minute. `/health` is not limited.
 ## Examples
 
 ```bash
-curl http://localhost:9999/api/files?path=/
+curl -H "X-API-Key: change-me" http://localhost:9999/api/files?path=/
 curl -o server.properties 'http://localhost:9999/api/files/download?path=server.properties'
 curl -X POST -F "file=@my-mod.jar" 'http://localhost:9999/api/files/upload?path=mods'
 curl -X POST -H 'Content-Type: application/json' -d '{"path":"mods/old"}' http://localhost:9999/api/files/create-dir
 curl -X POST -H 'Content-Type: application/json' -d '{"path":"mods/old"}' http://localhost:9999/api/files/delete
-curl -N http://localhost:9999/api/logs/stream
-# with SIDECAR_API_KEY set:
-curl -H "X-API-Key: $SIDECAR_API_KEY" http://localhost:9999/api/files
+curl -H "X-API-Key: $SIDECAR_API_KEY" http://localhost:9999/api/files   # every request needs the key
 ```
 
 ## Development
@@ -84,3 +81,4 @@ make build                  # build the container image (see Makefile for the im
 ## License
 
 Distributed under the MIT License. See `LICENSE` for more information.
+

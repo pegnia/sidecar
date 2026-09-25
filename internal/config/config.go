@@ -27,8 +27,6 @@ type APIConfig struct {
 // DataConfig specifies the data directory and log file paths.
 type DataConfig struct {
 	Root string
-	// StdoutFile is the game's console log, relative to Root.
-	StdoutFile string
 }
 
 // LoadFromEnv loads configuration from environment variables.
@@ -41,8 +39,7 @@ func LoadFromEnv() *Config {
 			Insecure:      getEnv("SIDECAR_INSECURE", "") == "true",
 		},
 		Data: DataConfig{
-			Root:       getEnv("SIDECAR_DATA_ROOT", "/data"),
-			StdoutFile: getEnv("SIDECAR_STDOUT_FILE", "logs/stdout.log"),
+			Root: getEnv("SIDECAR_DATA_ROOT", "/data"),
 		},
 	}
 }

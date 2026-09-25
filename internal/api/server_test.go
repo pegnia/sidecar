@@ -32,7 +32,7 @@ func newTestServer(t *testing.T, apiKey string) (http.Handler, string, string) {
 
 	s, err := NewServer(&config.Config{
 		API:  config.APIConfig{APIKey: apiKey, RateLimit: 1000},
-		Data: config.DataConfig{Root: dataRoot, StdoutFile: "logs/stdout.log"},
+		Data: config.DataConfig{Root: dataRoot},
 	})
 	if err != nil {
 		t.Fatal(err)
