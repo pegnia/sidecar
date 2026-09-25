@@ -113,7 +113,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 }
 
 // authMiddleware requires the configured API key in the X-API-Key header. Without a
-// configured key the API is open, and access must be restricted by the network instead.
+// configured key (only allowed with SIDECAR_INSECURE=true) the API is open.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.apiKey == "" || r.URL.Path == "/health" {

@@ -38,10 +38,11 @@ Uploads are limited to 500 MB, and files with executable/script extensions
 
 ### Authentication
 
-If `SIDECAR_API_KEY` is set, every request except `/health` must carry it in the
-`X-API-Key` header, otherwise the sidecar answers `401`. If it is empty, the API is open
-and access must be limited at the network level (e.g. a NetworkPolicy that only lets the
-panel reach port 9999).
+Every request except `/health` must carry `SIDECAR_API_KEY` in the `X-API-Key` header,
+otherwise the sidecar answers `401`. Without a key the sidecar refuses to start, unless
+`SIDECAR_INSECURE=true` asks for an open API (local experiments only). In the cluster the
+controller gives each server's sidecar its own key, and a NetworkPolicy lets only the
+panel reach the sidecar port.
 
 ### Rate limiting
 
@@ -55,7 +56,8 @@ limited to `SIDECAR_RATE_LIMIT` requests per minute. `/health` is not limited.
 | `SIDECAR_API_ADDR`    | Listen address of the API                            | `:9999`           |
 | `SIDECAR_DATA_ROOT`   | Directory served by the API (the game's data volume); must exist | `/data` |
 | `SIDECAR_STDOUT_FILE` | Console log file, relative to the data root          | `logs/stdout.log` |
-| `SIDECAR_API_KEY`     | Required `X-API-Key` value; empty disables auth      | (empty)           |
+| `SIDECAR_API_KEY`     | Required `X-API-Key` value (the controller sets a per-server key) | (empty: refuses to start) |
+| `SIDECAR_INSECURE`    | `true` allows starting without an API key (local experiments only) | (empty) |
 | `SIDECAR_RATE_LIMIT`  | Requests per minute per client IP                    | `60`              |
 
 ## Examples
