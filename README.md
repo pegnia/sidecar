@@ -38,10 +38,11 @@ Uploads are limited to 500 MB, and files with executable/script extensions
 
 ### Authentication
 
-If `SIDECAR_API_KEY` is set, every request except `/health` must carry it in the
-`X-API-Key` header, otherwise the sidecar answers `401`. If it is empty, the API is open
-and access must be limited at the network level (e.g. a NetworkPolicy that only lets the
-panel reach port 9999).
+Every request except `/health` must carry `SIDECAR_API_KEY` in the `X-API-Key` header,
+otherwise the sidecar answers `401`. Without a key the sidecar refuses to start, unless
+`SIDECAR_INSECURE=true` asks for an open API (local experiments only). In the cluster the
+controller gives each server's sidecar its own key, and a NetworkPolicy lets only the
+panel reach the sidecar port.
 
 ### Rate limiting
 
